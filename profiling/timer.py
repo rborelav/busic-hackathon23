@@ -8,7 +8,7 @@ class Timer:
         if not func_name in self.logger:
             self.logger[func_name] = {'start_time':time.perf_counter(), 'exec_count':0, 'cum_runtime':0}
         else:
-            pass
+            self.logger[func_name]['start_time'] = time.perf_counter()
 
     def log(self, func_name):
         if self.logger[func_name]:

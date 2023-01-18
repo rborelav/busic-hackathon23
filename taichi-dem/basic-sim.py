@@ -11,11 +11,13 @@ to calculate an appropriate time step
 import taichi as ti
 import math
 import os, sys
+import time
+from cupyx.profiler import benchmark
 
 # add folders with python modules
 cwd = r''+os.getcwd()
-sys.path.append(cwd+r'\utils-dem')
-sys.path.append(cwd+r'\profiling')
+sys.path.append(cwd+r'/utils-dem')
+sys.path.append(cwd+r'/profiling')
 
 # add user defined modules
 import utils
@@ -23,13 +25,13 @@ from timer import Timer #--> ADDED
 
 func_timer = Timer() #--> ADDED
 
-ti.init(arch=ti.cpu)
+ti.init(arch=ti.gpu)
 vec = ti.math.vec2
 
 SAVE_FRAMES = False
 
 window_size = 640  # Number of pixels of the window
-n = 16000#8192  # Number of grains
+n = 16000 #8192  # Number of grains
 
 density = 2700.0
 youngs_mod = 1e9
@@ -53,7 +55,7 @@ grid_size = 1.0 / grid_n  # Simulation domain of size [0, 1]
 print(f"Grid size: {grid_n}x{grid_n}")
 
 grain_r_min = 0.002
-grain_r_max = 0.003
+grain_r_max = 0.002
 
 assert grain_r_max * 2 < grid_size
 
@@ -80,10 +82,13 @@ def init():
 
 @ti.kernel
 def update():
+    dt2 = 0.5 * dt**2
+    dt_half = 0.5 * dt 
+    # ti.loop_config(block_dim=256)
     for i in gf:
         a = gf[i].f / gf[i].m
-        gf[i].v += (gf[i].a + a) * dt / 2.0
-        gf[i].p += gf[i].v * dt + 0.5 * a * dt**2
+        gf[i].v += (gf[i].a + a) * dt_half
+        gf[i].p += gf[i].v * dt + a * dt2
         gf[i].a = a
 
 
@@ -216,7 +221,7 @@ func_timer.start('init')  #--> ADDED
 init()
 func_timer.log('init')  #--> ADDED
 
-gui = ti.GUI('Taichi DEM', (window_size, window_size))
+gui = ti.GUI('Taichi DEM', (window_size, window_size), show_gui=False)
 """"""
 step = 0
 
@@ -232,7 +237,8 @@ else:
     gui.show()
 
 """
-#while gui.running:
+# while gui.running:
+print(time.perf_counter())
 while step < 10000:
     for s in range(substeps):
         func_timer.start('update')  #--> ADDED
@@ -257,4 +263,6 @@ while step < 10000:
         gui.show()
     """
     step += 1
+print(time.perf_counter())
 func_timer.output_log('basic-sim-prof.txt')
+print(benchmark(update, (), n_repeat=100))
