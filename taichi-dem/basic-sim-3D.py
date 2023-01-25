@@ -12,7 +12,7 @@ import taichi as ti
 import math
 import os, sys
 import time
-from cupyx.profiler import benchmark
+#from cupyx.profiler import benchmark
 
 # add folders with python modules
 cwd = r''+os.getcwd()
@@ -29,7 +29,7 @@ ti.init(arch=ti.gpu)
 SAVE_FRAMES = False
 
 window_size = 640  # Number of pixels of the window
-n = 8000 #8192  # Number of grains
+n = 20000 #8192  # Number of grains
 
 density = 2700.0
 youngs_mod = 1e9
@@ -297,5 +297,5 @@ while step < 10000:
     """
     step += 1
 print('Cumulative Time elapsed after executing all functions: ' + str(time.perf_counter()))
-func_timer.output_log('basic-sim-prof.txt')
-print(benchmark(update, (), n_repeat=100))
+func_timer.output_log('output_log/basic-sim-prof-3D.txt')
+#print(benchmark(update, (), n_repeat=100))
