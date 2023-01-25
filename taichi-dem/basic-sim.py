@@ -16,6 +16,7 @@ from cupyx.profiler import benchmark
 
 import numpy as np
 import cupy as cp
+import copy
 
 # add folders with python modules
 cwd = r''+os.getcwd()
@@ -29,7 +30,7 @@ from timer_implementation import DEMSolverStatistics
 
 func_timer = Timer() #--> ADDED
 
-ti.init(arch=ti.gpu, kernel_profiler=False)
+ti.init(arch=ti.gpu, kernel_profiler=True)
 vec = ti.math.vec2
 
 SAVE_FRAMES = False
@@ -166,17 +167,22 @@ def contact(gf: ti.template()):
         grid_idx = ti.floor(gf[i].p * grid_n, int)
         grain_count[grid_idx] += 1
 
-    for i in range(grid_n):
-        sum = 0
-        for j in range(grid_n):
-            sum += grain_count[i, j]
-        column_sum[i] = sum
+    # for i in range(grid_n):
+    #     sum = 0
+    #     for j in range(grid_n):
+    #         sum += grain_count[i, j]
+    #     column_sum[i] = sum
 
+
+@ti.kernel
+def contact2(gf: ti.template(), grain_count_cp: ti.i32):
     prefix_sum[0, 0] = 0
 
     ti.loop_config(serialize=True)
     for i in range(1, grid_n):
         prefix_sum[i, 0] = prefix_sum[i - 1, 0] + column_sum[i - 1]
+
+    grain_count
 
     for i in range(grid_n):
         for j in range(grid_n):
@@ -191,19 +197,24 @@ def contact(gf: ti.template()):
             list_cur[linear_idx] = list_head[linear_idx]
             list_tail[linear_idx] = prefix_sum[i, j]
 
+    
+
+    # Brute-force collision detection
+    """
+    for i in range(n):
+        for j in range(i + 1, n):
+            resolve(i, j)
+    """
+    # print(list_head)
+
+@ti.kernel
+def collision_detect(gf:ti.template(), list_head: ti.template(), list_tail: ti.template(), list_cur: ti.template()):
+
     for i in range(n):
         grid_idx = ti.floor(gf[i].p * grid_n, int)
         linear_idx = grid_idx[0] * grid_n + grid_idx[1]
         grain_location = ti.atomic_add(list_cur[linear_idx], 1)
         particle_id[grain_location] = i
-
-    # Brute-force collision detection
-    '''
-    for i in range(n):
-        for j in range(i + 1, n):
-            resolve(i, j)
-    '''
-
     # Fast collision detection
     for i in range(n):
         grid_idx = ti.floor(gf[i].p * grid_n, int)
@@ -274,12 +285,34 @@ while step < num_steps:
         # func_timer.start('contact')  #--> ADDED
         statistcs.ContactTime.tick()
         contact(gf)
+        grain_count_tc = grain_count.to_torch(device='cuda')
+        # print(grain_count_cp.shape)
+        zeroA = cp.linspace(0, 1, num=1, endpoint=True, retstep=False, dtype=cp.int32)
+        list_tail_cp = cp.cumsum(grain_count_cp, dtype=cp.int32)
+        list_head_cp = cp.append(zeroA, list_tail_cp[0:grid_n*grid_n-1])
+        list_head_np = cp.asnumpy(list_head_cp)
+        
+
+        list_curr_np = copy.deepcopy(list_head_np)
+        # print(list_curr_np.shape)
+        # print(type(list_head_np[0]))
+        # print(f"list head: {list_head_np[100:200]}")
+        # print(f"list cur: {list_curr_np[100:200]}")
+        # print(f"list tail: {list_tail_cp[100:200]}")
+        list_head.from_numpy(list_head_np)
+        list_cur.from_numpy(list_curr_np)
+        list_tail.from_numpy(list_tail_cp.get())
+        collision_detect(gf, list_head, list_tail, list_cur)
+        # contact2(gf, grain_count_cp)
         statistcs.ContactTime.tick()
         statistcs.SolveTime.tick()
+        # print([list_head[idx] for idx in range(500)])
+        # print(list_head[:500])
+        # break
         # func_timer.log('contact')  #--> ADDED
-
+    # break
     pos = gf.p.to_numpy()
-    if step > 0:
+    if step == 5000:
         statistcs.report_avg(step)
     # gf.p.to_numpy().tofile(f, format="%f")
     # cp_array = cp.asarray(gf.p.to_numpy())
@@ -309,7 +342,7 @@ print(f"time used is {time_used}")
     # func_timer.output_log('basic-sim-prof.txt')
     # print(benchmark(update, (), n_repeat=100))
     # ti.profiler.print_scoped_profiler_info()
-    # ti.profiler.print_kernel_profiler_info()
+ti.profiler.print_kernel_profiler_info()
     # return time_used
 # print(benchmark(update, (), n_repeat=100))
 # print(benchmark(apply_bc, (), n_repeat=100))
