@@ -17,6 +17,7 @@ from cupyx.profiler import benchmark
 import numpy as np
 import cupy as cp
 import copy
+import torch
 
 # add folders with python modules
 cwd = r''+os.getcwd()
@@ -216,22 +217,22 @@ def collision_detect(gf:ti.template(), list_head: ti.template(), list_tail: ti.t
         grain_location = ti.atomic_add(list_cur[linear_idx], 1)
         particle_id[grain_location] = i
     # Fast collision detection
-    for i in range(n):
-        grid_idx = ti.floor(gf[i].p * grid_n, int)
-        x_begin = ti.max(grid_idx[0] - 1, 0)
-        x_end = ti.min(grid_idx[0] + 2, grid_n)
+    # for i in range(n):
+    #     grid_idx = ti.floor(gf[i].p * grid_n, int)
+    #     x_begin = ti.max(grid_idx[0] - 1, 0)
+    #     x_end = ti.min(grid_idx[0] + 2, grid_n)
 
-        y_begin = ti.max(grid_idx[1] - 1, 0)
-        y_end = ti.min(grid_idx[1] + 2, grid_n)
+    #     y_begin = ti.max(grid_idx[1] - 1, 0)
+    #     y_end = ti.min(grid_idx[1] + 2, grid_n)
 
-        for neigh_i in range(x_begin, x_end):
-            for neigh_j in range(y_begin, y_end):
-                neigh_linear_idx = neigh_i * grid_n + neigh_j
-                for p_idx in range(list_head[neigh_linear_idx],
-                                   list_tail[neigh_linear_idx]):
-                    j = particle_id[p_idx]
-                    if i < j:
-                        resolve(i, j)
+    #     for neigh_i in range(x_begin, x_end):
+    #         for neigh_j in range(y_begin, y_end):
+    #             neigh_linear_idx = neigh_i * grid_n + neigh_j
+    #             for p_idx in range(list_head[neigh_linear_idx],
+    #                                list_tail[neigh_linear_idx]):
+    #                 j = particle_id[p_idx]
+    #                 if i < j:
+    #                     resolve(i, j)
 
 
 # def run_sim():
@@ -267,6 +268,7 @@ r = gf.r.to_numpy() * window_size # move out of for loop
 # batch_idx = 1
 # batch_size = 1000
 statistcs = DEMSolverStatistics()
+list_head_tc = torch.zeros(grid_n*grid_n, dtype=torch.int32, device='cuda')
 while step < num_steps:
     for s in range(substeps):
         statistcs.SolveTime.tick()
@@ -284,25 +286,26 @@ while step < num_steps:
 
         # func_timer.start('contact')  #--> ADDED
         statistcs.ContactTime.tick()
-        contact(gf)
-        grain_count_tc = grain_count.to_torch(device='cuda')
-        # print(grain_count_cp.shape)
-        zeroA = cp.linspace(0, 1, num=1, endpoint=True, retstep=False, dtype=cp.int32)
-        list_tail_cp = cp.cumsum(grain_count_cp, dtype=cp.int32)
-        list_head_cp = cp.append(zeroA, list_tail_cp[0:grid_n*grid_n-1])
-        list_head_np = cp.asnumpy(list_head_cp)
+        # contact(gf)
+        # grain_count_tc = grain_count.to_torch(device='cuda')
+        # # print(grain_count_cp.shape)
+        # # zeroA = torch.linspace(0, 1, steps=1, dtype=torch.int32, device='cuda')
+        # list_tail_tc = torch.cumsum(grain_count_tc, dim=0, dtype=torch.int32)
+        # list_tail_tc = torch.flatten(list_tail_tc)
+        # list_head_tc[1:grid_n*grid_n] = list_tail_tc[0:grid_n*grid_n-1]
+        # # list_head_np = cp.asnumpy(list_head_cp)
         
 
-        list_curr_np = copy.deepcopy(list_head_np)
-        # print(list_curr_np.shape)
-        # print(type(list_head_np[0]))
-        # print(f"list head: {list_head_np[100:200]}")
-        # print(f"list cur: {list_curr_np[100:200]}")
-        # print(f"list tail: {list_tail_cp[100:200]}")
-        list_head.from_numpy(list_head_np)
-        list_cur.from_numpy(list_curr_np)
-        list_tail.from_numpy(list_tail_cp.get())
-        collision_detect(gf, list_head, list_tail, list_cur)
+        # list_curr_tc = list_head_tc.clone()
+        # # # print(list_curr_np.shape)
+        # # # print(type(list_head_np[0]))
+        # # # print(f"list head: {list_head_np[100:200]}")
+        # # # print(f"list cur: {list_curr_np[100:200]}")
+        # # # print(f"list tail: {list_tail_cp[100:200]}")
+        # list_head.from_torch(list_head_tc)
+        # list_cur.from_torch(list_curr_tc)
+        # list_tail.from_torch(list_tail_tc)
+        # collision_detect(gf, list_head, list_tail, list_cur)
         # contact2(gf, grain_count_cp)
         statistcs.ContactTime.tick()
         statistcs.SolveTime.tick()
