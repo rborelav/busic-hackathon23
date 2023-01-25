@@ -14,6 +14,9 @@ import os, sys
 import time
 from cupyx.profiler import benchmark
 
+import numpy as np
+import cupy as cp
+
 # add folders with python modules
 cwd = r''+os.getcwd()
 sys.path.append(cwd+r'/utils-dem')
@@ -21,11 +24,12 @@ sys.path.append(cwd+r'/profiling')
 
 # add user defined modules
 import utils
-from timer import Timer #--> ADDED
+from timer_implementation import Timer #--> ADDED
+from timer_implementation import DEMSolverStatistics
 
 func_timer = Timer() #--> ADDED
 
-ti.init(arch=ti.gpu)
+ti.init(arch=ti.gpu, kernel_profiler=False)
 vec = ti.math.vec2
 
 SAVE_FRAMES = False
@@ -38,6 +42,7 @@ youngs_mod = 1e9
 restitution_coef = 0.001
 gravity = -9.81
 substeps = 1
+num_steps = 10000
 
 @ti.dataclass
 class Grain:
@@ -55,7 +60,7 @@ grid_size = 1.0 / grid_n  # Simulation domain of size [0, 1]
 print(f"Grid size: {grid_n}x{grid_n}")
 
 grain_r_min = 0.002
-grain_r_max = 0.002
+grain_r_max = 0.003
 
 assert grain_r_max * 2 < grid_size
 
@@ -217,6 +222,9 @@ def contact(gf: ti.template()):
                     if i < j:
                         resolve(i, j)
 
+
+# def run_sim():
+
 func_timer.start('init')  #--> ADDED
 init()
 func_timer.log('init')  #--> ADDED
@@ -237,23 +245,55 @@ else:
     gui.show()
 """
 # while gui.running:
-print(time.perf_counter())
-while step < 10000:
+start_time = time.perf_counter()
+# print(time.perf_counter())
+r = gf.r.to_numpy() * window_size # move out of for loop
+
+# mult = n * substeps * 2
+# # f = open("position.txt", 'a')
+# fp = np.memmap(f"position.dat", dtype="float32", mode='w+', shape=(mult*num_steps))
+# pos_list = []
+# batch_idx = 1
+# batch_size = 1000
+statistcs = DEMSolverStatistics()
+while step < num_steps:
     for s in range(substeps):
-        func_timer.start('update')  #--> ADDED
+        statistcs.SolveTime.tick()
+        # func_timer.start('update')  #--> ADDED
+        statistcs.UpdateTime.tick()
         update()
-        func_timer.log('update')  #--> ADDED
+        statistcs.UpdateTime.tick()
+        # func_timer.log('update')  #--> ADDED
 
-        func_timer.start('apply_bc')  #--> ADDED
+        # func_timer.start('apply_bc')  #--> ADDED
+        statistcs.Apply_bcTime.tick()
         apply_bc()
-        func_timer.log('apply_bc')  #--> ADDED
+        statistcs.Apply_bcTime.tick()
+        # func_timer.log('apply_bc')  #--> ADDED
 
-        func_timer.start('contact')  #--> ADDED
+        # func_timer.start('contact')  #--> ADDED
+        statistcs.ContactTime.tick()
         contact(gf)
-        func_timer.log('contact')  #--> ADDED
+        statistcs.ContactTime.tick()
+        statistcs.SolveTime.tick()
+        # func_timer.log('contact')  #--> ADDED
 
     pos = gf.p.to_numpy()
-    r = gf.r.to_numpy() * window_size
+    if step > 0:
+        statistcs.report_avg(step)
+    # gf.p.to_numpy().tofile(f, format="%f")
+    # cp_array = cp.asarray(gf.p.to_numpy())
+    # pos_list.append(np.reshape(gf.p.to_numpy(), -1))
+        
+    # if batch_idx == batch_size:
+    #     pos_flat = np.concatenate(pos_list, 0)
+    #     fp[step//batch_size*mult*batch_size:(step//batch_size+1)*mult*batch_size] = pos_flat[:]
+    #     pos_list = []
+    #     batch_idx = 0
+    # batch_idx += 1
+
+    # r = gf.r.to_numpy() * window_size
+
     """
     gui.circles(pos, radius=r)
     if SAVE_FRAMES:
@@ -262,6 +302,21 @@ while step < 10000:
         gui.show()
     """
     step += 1
-print(time.perf_counter())
-func_timer.output_log('basic-sim-prof.txt')
-print(benchmark(update, (), n_repeat=100))
+
+# del fp
+time_used = time.perf_counter()-start_time
+print(f"time used is {time_used}")
+    # func_timer.output_log('basic-sim-prof.txt')
+    # print(benchmark(update, (), n_repeat=100))
+    # ti.profiler.print_scoped_profiler_info()
+    # ti.profiler.print_kernel_profiler_info()
+    # return time_used
+# print(benchmark(update, (), n_repeat=100))
+# print(benchmark(apply_bc, (), n_repeat=100))
+# print(benchmark(contact, (gf,), n_repeat=100))
+
+# time_list = []
+# for i in range(1):
+#     time_list.append(run_sim())
+
+# print(np.mean(time_list))
