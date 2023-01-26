@@ -24,7 +24,7 @@ import utils
 from timer_implementation import Timer #--> ADDED
 
 func_timer = Timer() #--> ADDED
-ti.init(arch=ti.gpu)
+ti.init(arch=ti.gpu, kernel_profiler=True)
 #vec = ti.math.vec2
 SAVE_FRAMES = False
 
@@ -156,8 +156,9 @@ list_tail = ti.field(dtype=ti.i32, shape=grid_n * grid_n * grid_n)
 grain_count = ti.field(dtype=ti.i32,
                        shape=(grid_n, grid_n, grid_n),
                        name="grain_count")
-column_sum = ti.field(dtype=ti.i32, shape=grid_n, name="column_sum")
+column_sum = ti.field(dtype=ti.i32, shape=(grid_n, grid_n), name="column_sum")
 prefix_sum = ti.field(dtype=ti.i32, shape=(grid_n, grid_n, grid_n), name="prefix_sum")
+prefix_sum_atomic = ti.field(dtype=ti.i32, shape=(grid_n, grid_n))
 particle_id = ti.field(dtype=ti.i32, shape=n, name="particle_id")
 
 
@@ -250,6 +251,35 @@ def contact(gf: ti.template()):
                         if i < j:
                             resolve(i, j)
 
+@ti.kernel
+def atomic_contact(gf: ti.template()):
+
+    for i in gf:
+        gf[i].f = vec3(0., 0, gravity * gf[i].m)  
+
+    #count grains    
+    grain_count.fill(0)
+    for i in range(n):
+        grid_idx = ti.floor(gf[i].p * grid_n, int)#cell index for each particle
+        grain_count[grid_idx] += 1#incrementing grain count for that cell by 1
+
+    column_sum.fill(0)
+    for i, j, k in ti.ndrange(grid_n, grid_n, grid_n):        
+        ti.atomic_add(column_sum[i, j], grain_count[i, j, k])
+
+    _prefix_sum_cur = 0    
+    for i, j in ti.ndrange(grid_n, grid_n):
+        prefix_sum_atomic[i, j] = ti.atomic_add(_prefix_sum_cur, column_sum[i, j])
+
+    for i, j, k in ti.ndrange(grid_n, grid_n, grid_n): 
+        # we cannot visit prefix_sum[i,j] in this loop
+        pre = ti.atomic_add(prefix_sum_atomic[i,j], grain_count[i, j, k])        
+        linear_idx = i * grid_n * grid_n + j * grid_n + k
+        list_head[linear_idx] = pre
+        list_cur[linear_idx] = list_head[linear_idx]
+        # only pre pointer is useable
+        list_tail[linear_idx] = pre + grain_count[i, j, k]
+
 func_timer.start('init')  #--> ADDED
 init()
 func_timer.log('init')  #--> ADDED
@@ -284,6 +314,7 @@ while step < 10000:
 
         func_timer.start('contact')  #--> ADDED
         contact(gf)
+        # atomic_contact(gf)
         func_timer.log('contact')  #--> ADDED
 
     pos = gf.p.to_numpy()
@@ -298,4 +329,5 @@ while step < 10000:
     step += 1
 print('Cumulative Time elapsed after executing all functions: ' + str(time.perf_counter()))
 func_timer.output_log('basic-sim-prof.txt')
+ti.profiler.print_kernel_profiler_info()
 print(benchmark(update, (), n_repeat=100))

@@ -19,6 +19,7 @@ import cupy as cp
 import copy
 import torch
 
+
 # add folders with python modules
 cwd = r''+os.getcwd()
 sys.path.append(cwd+r'/utils-dem')
@@ -29,6 +30,7 @@ import utils
 from timer_implementation import Timer #--> ADDED
 from timer_implementation import DEMSolverStatistics
 
+
 func_timer = Timer() #--> ADDED
 
 ti.init(arch=ti.gpu, kernel_profiler=True)
@@ -37,7 +39,7 @@ vec = ti.math.vec2
 SAVE_FRAMES = False
 
 window_size = 640  # Number of pixels of the window
-n = 16000 #8192  # Number of grains
+n = 8000 #8192  # Number of grains
 
 density = 2700.0
 youngs_mod = 1e9
@@ -147,11 +149,11 @@ list_cur = ti.field(dtype=ti.i32, shape=grid_n * grid_n)
 list_tail = ti.field(dtype=ti.i32, shape=grid_n * grid_n)
 
 grain_count = ti.field(dtype=ti.i32,
-                       shape=(grid_n, grid_n),
-                       name="grain_count")
-column_sum = ti.field(dtype=ti.i32, shape=grid_n, name="column_sum")
-prefix_sum = ti.field(dtype=ti.i32, shape=(grid_n, grid_n), name="prefix_sum")
-particle_id = ti.field(dtype=ti.i32, shape=n, name="particle_id")
+                       shape=(grid_n, grid_n))
+column_sum = ti.field(dtype=ti.i32, shape=grid_n)
+prefix_sum = ti.field(dtype=ti.i32, shape=(grid_n, grid_n))
+prefix_sum_atomic = ti.field(dtype=ti.i32, shape=grid_n)
+particle_id = ti.field(dtype=ti.i32, shape=n)
 
 
 @ti.kernel
@@ -168,22 +170,17 @@ def contact(gf: ti.template()):
         grid_idx = ti.floor(gf[i].p * grid_n, int)
         grain_count[grid_idx] += 1
 
-    # for i in range(grid_n):
-    #     sum = 0
-    #     for j in range(grid_n):
-    #         sum += grain_count[i, j]
-    #     column_sum[i] = sum
+    for i in range(grid_n):
+        sum = 0
+        for j in range(grid_n):
+            sum += grain_count[i, j]
+        column_sum[i] = sum
 
-
-@ti.kernel
-def contact2(gf: ti.template(), grain_count_cp: ti.i32):
     prefix_sum[0, 0] = 0
 
     ti.loop_config(serialize=True)
     for i in range(1, grid_n):
         prefix_sum[i, 0] = prefix_sum[i - 1, 0] + column_sum[i - 1]
-
-    grain_count
 
     for i in range(grid_n):
         for j in range(grid_n):
@@ -198,44 +195,73 @@ def contact2(gf: ti.template(), grain_count_cp: ti.i32):
             list_cur[linear_idx] = list_head[linear_idx]
             list_tail[linear_idx] = prefix_sum[i, j]
 
-    
-
-    # Brute-force collision detection
-    """
-    for i in range(n):
-        for j in range(i + 1, n):
-            resolve(i, j)
-    """
-    # print(list_head)
-
-@ti.kernel
-def collision_detect(gf:ti.template(), list_head: ti.template(), list_tail: ti.template(), list_cur: ti.template()):
-
     for i in range(n):
         grid_idx = ti.floor(gf[i].p * grid_n, int)
         linear_idx = grid_idx[0] * grid_n + grid_idx[1]
         grain_location = ti.atomic_add(list_cur[linear_idx], 1)
         particle_id[grain_location] = i
+
+    # Brute-force collision detection
+    '''
+    for i in range(n):
+        for j in range(i + 1, n):
+            resolve(i, j)
+    '''
+
     # Fast collision detection
-    # for i in range(n):
-    #     grid_idx = ti.floor(gf[i].p * grid_n, int)
-    #     x_begin = ti.max(grid_idx[0] - 1, 0)
-    #     x_end = ti.min(grid_idx[0] + 2, grid_n)
+    for i in range(n):
+        grid_idx = ti.floor(gf[i].p * grid_n, int)
+        x_begin = max(grid_idx[0] - 1, 0)
+        x_end = min(grid_idx[0] + 2, grid_n)
 
-    #     y_begin = ti.max(grid_idx[1] - 1, 0)
-    #     y_end = ti.min(grid_idx[1] + 2, grid_n)
+        y_begin = max(grid_idx[1] - 1, 0)
+        y_end = min(grid_idx[1] + 2, grid_n)
 
-    #     for neigh_i in range(x_begin, x_end):
-    #         for neigh_j in range(y_begin, y_end):
-    #             neigh_linear_idx = neigh_i * grid_n + neigh_j
-    #             for p_idx in range(list_head[neigh_linear_idx],
-    #                                list_tail[neigh_linear_idx]):
-    #                 j = particle_id[p_idx]
-    #                 if i < j:
-    #                     resolve(i, j)
+        for neigh_i in range(x_begin, x_end):
+            for neigh_j in range(y_begin, y_end):
+                neigh_linear_idx = neigh_i * grid_n + neigh_j
+                for p_idx in range(list_head[neigh_linear_idx],
+                                   list_tail[neigh_linear_idx]):
+                    j = particle_id[p_idx]
+                    if i < j:
+                        resolve(i, j)
 
 
-# def run_sim():
+@ti.kernel
+def atomic_contact(gf: ti.template()):
+
+    for i in gf:
+        gf[i].f = vec(0., gravity * gf[i].m)  # Apply gravity.
+
+    grain_count.fill(0)
+
+    column_sum.fill(0)
+    # print([grain_count[i, 2] for i in range(130)])
+    for i in range(n):
+        grid_idx = ti.floor(gf[i].p * grid_n, int)
+        grain_count[grid_idx] += 1
+
+    # print([grain_count[i, 0] for i in range(140)])
+
+    for i, j in ti.ndrange(grid_n, grid_n):
+        ti.atomic_add(column_sum[i], grain_count[i, j])
+
+    # print([column_sum[i] for i in range(14)])
+
+    _prefix_sum_cur = 0
+    for i in ti.ndrange(grid_n):
+        prefix_sum_atomic[i] = ti.atomic_add(_prefix_sum_cur, column_sum[i])
+
+    # print([prefix_sum_atomic[i] for i in range(140)])
+
+    for i, j in ti.ndrange(grid_n, grid_n):
+        pre = ti.atomic_add(prefix_sum_atomic[i], grain_count[i, j])
+
+        linear_idx = i * grid_n + j
+
+        list_head[linear_idx] = pre
+        list_cur[linear_idx] = list_head[linear_idx]
+        list_tail[linear_idx] = pre + grain_count[i, j]
 
 func_timer.start('init')  #--> ADDED
 init()
@@ -268,7 +294,7 @@ r = gf.r.to_numpy() * window_size # move out of for loop
 # batch_idx = 1
 # batch_size = 1000
 statistcs = DEMSolverStatistics()
-list_head_tc = torch.zeros(grid_n*grid_n, dtype=torch.int32, device='cuda')
+# list_head_tc = torch.zeros(grid_n*grid_n, dtype=torch.int32, device='cuda')
 while step < num_steps:
     for s in range(substeps):
         statistcs.SolveTime.tick()
@@ -286,7 +312,8 @@ while step < num_steps:
 
         # func_timer.start('contact')  #--> ADDED
         statistcs.ContactTime.tick()
-        # contact(gf)
+        # grain_count.fill(0)
+        atomic_contact(gf)
         # grain_count_tc = grain_count.to_torch(device='cuda')
         # # print(grain_count_cp.shape)
         # # zeroA = torch.linspace(0, 1, steps=1, dtype=torch.int32, device='cuda')
@@ -305,6 +332,7 @@ while step < num_steps:
         # list_head.from_torch(list_head_tc)
         # list_cur.from_torch(list_curr_tc)
         # list_tail.from_torch(list_tail_tc)
+        # contact2(gf)
         # collision_detect(gf, list_head, list_tail, list_cur)
         # contact2(gf, grain_count_cp)
         statistcs.ContactTime.tick()
@@ -347,7 +375,7 @@ print(f"time used is {time_used}")
     # ti.profiler.print_scoped_profiler_info()
 ti.profiler.print_kernel_profiler_info()
     # return time_used
-# print(benchmark(update, (), n_repeat=100))
+# print(benchmark(test_cumsum, (test_array,), n_repeat=100))
 # print(benchmark(apply_bc, (), n_repeat=100))
 # print(benchmark(contact, (gf,), n_repeat=100))
 
