@@ -51,7 +51,7 @@ gf = Grain.field(shape=(n, ))
 
 # Defining the grid size, number of grids, and particle size range. 
 # The grid spans the sample domain. Each grid accomodates atleast 2 particles
-grid_n = 130
+grid_n = 130 # this should be a function of number of particles
 grid_size = 1.0 / grid_n  # Simulation domain of size [0, 1]
 print(f"Grid size: {grid_n}x{grid_n}x{grid_n}")
 grain_r_min = 0.002
@@ -156,8 +156,8 @@ list_tail = ti.field(dtype=ti.i32, shape=grid_n * grid_n * grid_n)
 grain_count = ti.field(dtype=ti.i32,
                        shape=(grid_n, grid_n, grid_n),
                        name="grain_count")
-column_sum = ti.field(dtype=ti.i32, shape=grid_n, name="column_sum")
-prefix_sum = ti.field(dtype=ti.i32, shape=(grid_n, grid_n, grid_n), name="prefix_sum")
+column_sum = ti.field(dtype=ti.i32, shape=(grid_n,grid_n), name="column_sum")
+prefix_sum = ti.field(dtype=ti.i32, shape=(grid_n,grid_n), name="prefix_sum")
 particle_id = ti.field(dtype=ti.i32, shape=n, name="particle_id")
 
 
@@ -198,36 +198,50 @@ def contact(gf: ti.template()):
     #             prefix_sum[i, j] = prefix_sum[i, j - 1] + grain_count[i, j]
                 
                 
-    #compute prefix sum in a better way, instead of above commented part
+    ## compute prefix sum in a better way, instead of above commented part
     # Assign the first element to the first element of prefix_sum
-    prefix_sum[0,0,0] = grain_count[0,0,0]
+    # prefix_sum[0,0,0] = grain_count[0,0,0]
     
-    for i,j,k in ti.ndrange(grain_count.shape[0], grain_count.shape[1], grain_count.shape[2]):
-        prefix_sum[i,j,k] = prefix_sum[i-1,j,k] + prefix_sum[i,j-1,k] - prefix_sum[i-1,j-1,k] + grain_count[i,j,k]
+    # for i,j,k in ti.ndrange(grain_count.shape[0], grain_count.shape[1], grain_count.shape[2]):
+    #     prefix_sum[i,j,k] = prefix_sum[i-1,j,k] + prefix_sum[i,j-1,k] - prefix_sum[i-1,j-1,k] + grain_count[i,j,k]
 
-    #compute list_head and list_tail of cumulative sum
-    for i in range(grid_n):
-         for j in range(grid_n):    
-             for k in range(grid_n):
-                linear_idx = i * grid_n * grid_n + j* grid_n + k
-                list_head[linear_idx] = prefix_sum[i, j,k] - grain_count[i, j,k]
-                list_cur[linear_idx] = list_head[linear_idx]
-                list_tail[linear_idx] = prefix_sum[i, j,k]
+    # #compute list_head and list_tail of cumulative sum
+    # for i in range(grid_n):
+    #      for j in range(grid_n):    
+    #          for k in range(grid_n):
+    #             linear_idx = i * grid_n * grid_n + j* grid_n + k
+    #             list_head[linear_idx] = prefix_sum[i, j,k] - grain_count[i, j,k]
+    #             list_cur[linear_idx] = list_head[linear_idx]
+    #             list_tail[linear_idx] = prefix_sum[i, j,k]
 
+
+    ## compute prefix sum in a way used in Geo-Blender --https://github.com/Linus-Civil/GeoBlender/blob/main/GeoBlender.py 
+    column_sum.fill(0)
+    for i, j, k in ti.ndrange(grid_n, grid_n, grid_n):        
+        ti.atomic_add(column_sum[i, j], grain_count[i, j, k])
+
+    _prefix_sum_cur = 0    
+    for i, j in ti.ndrange(grid_n, grid_n):
+        prefix_sum[i, j] = ti.atomic_add(_prefix_sum_cur, column_sum[i, j])
+    
+    for i, j, k in ti.ndrange(grid_n, grid_n, grid_n): 
+        # we cannot visit prefix_sum[i,j] in this loop
+        pre = ti.atomic_add(prefix_sum[i,j], grain_count[i, j, k])        
+        linear_idx = i * grid_n * grid_n + j * grid_n + k
+        list_head[linear_idx] = pre
+        list_cur[linear_idx] = list_head[linear_idx]
+        # only pre pointer is useable 
+        list_tail[linear_idx] = pre + grain_count[i, j, k] 
+    
+    
     #particle_id is ordering the particle ids based on their linear position
     for i in range(n):
         grid_idx = ti.floor(gf[i].p * grid_n, int)
         linear_idx = grid_idx[0] * grid_n * grid_n + grid_idx[1] * grid_n + grid_idx[2]
         grain_location = ti.atomic_add(list_cur[linear_idx], 1)
         particle_id[grain_location] = i
-
-    # Brute-force collision detection
-    '''
-    for i in range(n):
-        for j in range(i + 1, n):
-            resolve(i, j)
-    '''
-
+    
+    
     # Fast collision detection
     for i in range(n):
         grid_idx = ti.floor(gf[i].p * grid_n, int)
